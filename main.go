@@ -9,7 +9,7 @@ import (
 	"strconv"
 	"strings"
 
-	"github.com/sashabaranov/go-openai"
+	"github.com/ollama/ollama/api"
 )
 
 // PostGenerator es una interfaz para los bots de generación de posts.
@@ -19,6 +19,84 @@ type PostGenerator interface {
 	GenTitle(ctx context.Context, businessInfo, premise string) (string, error)
 	GenContent(ctx context.Context, businessInfo, title string) (string, error)
 	GenImagePrompt(ctx context.Context, businessInfo, title, content string) (string, error)
+}
+
+// ollamaPostGenerator genera contenido usando un modelo local vía Ollama.
+type ollamaPostGenerator struct {
+	client *api.Client
+	model  string
+}
+
+// NewOllamaPostGenerator crea una nueva instancia que usa Ollama.
+func NewOllamaPostGenerator(client *api.Client, model string) PostGenerator {
+	if model == "" {
+		model = "qwen3:8b"
+	}
+	return &ollamaPostGenerator{client: client, model: model}
+}
+
+// generate es un helper reutilizable para evitar duplicación en llamadas a Ollama.
+func (o *ollamaPostGenerator) generate(ctx context.Context, system, prompt string) (string, error) {
+	if prompt == "" {
+		return "", fmt.Errorf("prompt cannot be empty")
+	}
+
+	req := &api.GenerateRequest{
+		Model:  o.model,
+		System: system,
+		Prompt: prompt,
+		Think:  &api.ThinkValue{Value: false},
+	}
+
+	var sb strings.Builder
+
+	errFn := func(res api.GenerateResponse) error {
+		fmt.Print(res.Response)
+		_, err := sb.WriteString(res.Response)
+		return err
+	}
+
+	if err := o.client.Generate(ctx, req, errFn); err != nil {
+		return "", fmt.Errorf("failed to generate response: %w", err)
+	}
+
+	return strings.TrimSpace(sb.String()), nil
+}
+
+func (o *ollamaPostGenerator) ExtractBusinessNameFromAbout(ctx context.Context, aboutContent string) (string, error) {
+	system := "You are in charge of determining what is the business name from this about us text. Only return the business name."
+	return o.generate(ctx, system, aboutContent)
+}
+
+func (o *ollamaPostGenerator) RefinePrompt(ctx context.Context, userPremise string) (string, error) {
+	system := "Your job is to refine the user premise idea for a facebook post. Refine the idea into something useful for an llm. Only return the refined prompt string sentence."
+	return o.generate(ctx, system, userPremise)
+}
+
+func (o *ollamaPostGenerator) GenTitle(ctx context.Context, businessInfo, premise string) (string, error) {
+	system := fmt.Sprintf(
+		"You are a social media marketing expert. Create a short, catchy Facebook post title (less than 60 characters) based on the business info and the user's idea. Only return the title, nothing else.\n\nBusiness Info: %s",
+		businessInfo,
+	)
+	return o.generate(ctx, system, premise)
+}
+
+func (o *ollamaPostGenerator) GenContent(ctx context.Context, businessInfo, title string) (string, error) {
+	system := fmt.Sprintf(
+		"You are a social media content writer. Write an engaging, friendly Facebook post based on the business info and the given title. Make it attention-grabbing, include emojis if appropriate, and end with a clear call to action (e.g., 'Visit us today!', 'DM for inquiries').\n\nBusiness Info: %s",
+		businessInfo,
+	)
+	prompt := fmt.Sprintf("Write a Facebook post with this title: %s", title)
+	return o.generate(ctx, system, prompt)
+}
+
+func (o *ollamaPostGenerator) GenImagePrompt(ctx context.Context, businessInfo, title, content string) (string, error) {
+	system := fmt.Sprintf(
+		"You are a visual artist and social media expert. Create a detailed, vivid image description that captures the essence of a Facebook post. Include style (e.g., realistic, cartoon, minimalist), lighting, mood, key elements, and composition. This will be used by an AI image generator.\n\nBusiness Info: %s",
+		businessInfo,
+	)
+	prompt := fmt.Sprintf("Title: %s\n\nContent: %s", title, content)
+	return o.generate(ctx, system, prompt)
 }
 
 // loadAbout lee el archivo "about.md" del directorio actual.
@@ -83,11 +161,14 @@ func main() {
 
 	userPremise := os.Args[1]
 
-	// Inicializar cliente OpenAI
-	openaiClient := openai.NewClient(os.Getenv("OPENAI_API_KEY"))
+	// Inicializar cliente Ollama
+	client, err := api.ClientFromEnvironment()
+	if err != nil {
+		log.Fatalln("Error al crear cliente de Ollama:", err)
+	}
 
-	// Usar OpenAI como generador (cambiar a NewOllamaPostGenerator para usar Ollama)
-	pg := NewOpenaiPostGenerator(openaiClient)
+	// Usar Ollama como generador
+	pg := NewOllamaPostGenerator(client, "qwen3:8b")
 
 	// Cargar información del negocio
 	businessInfo, err := loadAbout()
