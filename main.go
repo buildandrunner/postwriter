@@ -52,6 +52,7 @@ func (o *ollamaPostGenerator) generate(ctx context.Context, system, prompt strin
 	var sb strings.Builder
 
 	errFn := func(res api.GenerateResponse) error {
+		fmt.Print(res.Response)
 		_, err := sb.WriteString(res.Response)
 		return err
 	}
