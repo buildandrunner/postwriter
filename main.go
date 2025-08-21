@@ -8,95 +8,186 @@ import (
 	"path/filepath"
 	"strconv"
 	"strings"
-	"time"
 
-	"github.com/ollama/ollama/api"
+	"github.com/sashabaranov/go-openai"
 )
 
 // PostGenerator es una interfaz para los bots de generación de posts.
 type PostGenerator interface {
-	ExtractBusinessNameFromAI(ctx context.Context, aboutContent string) (string, error)
+	ExtractBusinessNameFromAbout(ctx context.Context, aboutContent string) (string, error)
 	RefinePrompt(ctx context.Context, userPremise string) (string, error)
 	GenTitle(ctx context.Context, businessInfo, premise string) (string, error)
 	GenContent(ctx context.Context, businessInfo, title string) (string, error)
 	GenImagePrompt(ctx context.Context, businessInfo, title, content string) (string, error)
 }
 
-// ollamaPostGenerator genera contenido usando un modelo local vía Ollama.
-type ollamaPostGenerator struct {
-	client *api.Client
-	model  string
+type openaiPostGenerator struct {
+	client *openai.Client
 }
 
-// NewOllamaPostGenerator crea una nueva instancia que usa Ollama.
-func NewOllamaPostGenerator(client *api.Client, model string) PostGenerator {
-	if model == "" {
-		model = "qwen3:0.6b"
+func (o *openaiPostGenerator) ExtractBusinessNameFromAbout(ctx context.Context, aboutContent string) (string, error) {
+	systemPrompt := "You are in charge of determining what is the business name from this about us text. Only return the business name."
+
+	resp, err := o.client.CreateChatCompletion(
+		ctx,
+		openai.ChatCompletionRequest{
+			Model: openai.GPT3Dot5Turbo,
+			Messages: []openai.ChatCompletionMessage{
+				{
+					Role:    openai.ChatMessageRoleSystem,
+					Content: systemPrompt,
+				},
+				{
+					Role:    openai.ChatMessageRoleUser,
+					Content: aboutContent,
+				},
+			},
+		},
+	)
+	if err != nil {
+		return "", fmt.Errorf("error extracting business name: %w", err)
 	}
-	return &ollamaPostGenerator{client: client, model: model}
+
+	if len(resp.Choices) == 0 {
+		return "", fmt.Errorf("no response from OpenAI API")
+	}
+
+	return strings.TrimSpace(resp.Choices[0].Message.Content), nil
 }
 
-// generate es un helper reutilizable para evitar duplicación en llamadas a Ollama.
-func (o *ollamaPostGenerator) generate(ctx context.Context, system, prompt string) (string, error) {
-	if prompt == "" {
-		return "", fmt.Errorf("prompt cannot be empty")
+func (o *openaiPostGenerator) RefinePrompt(ctx context.Context, userPremise string) (string, error) {
+	systemPrompt := "Your job is to refine the user premise idea for a facebook post. Refine the idea into something useful for an llm. Only return the refined prompt string sentence."
+
+	resp, err := o.client.CreateChatCompletion(
+		ctx,
+		openai.ChatCompletionRequest{
+			Model: openai.GPT3Dot5Turbo,
+			Messages: []openai.ChatCompletionMessage{
+				{
+					Role:    openai.ChatMessageRoleSystem,
+					Content: systemPrompt,
+				},
+				{
+					Role:    openai.ChatMessageRoleUser,
+					Content: userPremise,
+				},
+			},
+		},
+	)
+	if err != nil {
+		return "", fmt.Errorf("error refining prompt: %w", err)
 	}
 
-	req := &api.GenerateRequest{
-		Model:  o.model,
-		System: system,
-		Prompt: prompt,
-		Think:  &api.ThinkValue{Value: false},
+	if len(resp.Choices) == 0 {
+		return "", fmt.Errorf("no response from OpenAI API")
 	}
 
-	var sb strings.Builder
-
-	errFn := func(res api.GenerateResponse) error {
-		_, err := sb.WriteString(res.Response)
-		return err
-	}
-
-	if err := o.client.Generate(ctx, req, errFn); err != nil {
-		return "", fmt.Errorf("failed to generate response: %w", err)
-	}
-
-	return strings.TrimSpace(sb.String()), nil
+	return strings.TrimSpace(resp.Choices[0].Message.Content), nil
 }
 
-func (o *ollamaPostGenerator) ExtractBusinessNameFromAI(ctx context.Context, aboutContent string) (string, error) {
-	system := "You are in charge of determining what is the business name from this about us text. Only return the business name."
-	return o.generate(ctx, system, aboutContent)
-}
-
-func (o *ollamaPostGenerator) RefinePrompt(ctx context.Context, userPremise string) (string, error) {
-	system := "Your job is to refine the user premise idea for a facebook post. Refine the idea into something useful for an llm. Only return the refined prompt string sentence."
-	return o.generate(ctx, system, userPremise)
-}
-
-func (o *ollamaPostGenerator) GenTitle(ctx context.Context, businessInfo, premise string) (string, error) {
-	system := fmt.Sprintf(
+func (o *openaiPostGenerator) GenTitle(ctx context.Context, businessInfo, premise string) (string, error) {
+	systemPrompt := fmt.Sprintf(
 		"You are a social media marketing expert. Create a short, catchy Facebook post title (less than 60 characters) based on the business info and the user's idea. Only return the title, nothing else.\n\nBusiness Info: %s",
 		businessInfo,
 	)
-	return o.generate(ctx, system, premise)
+
+	resp, err := o.client.CreateChatCompletion(
+		ctx,
+		openai.ChatCompletionRequest{
+			Model: openai.GPT3Dot5Turbo,
+			Messages: []openai.ChatCompletionMessage{
+				{
+					Role:    openai.ChatMessageRoleSystem,
+					Content: systemPrompt,
+				},
+				{
+					Role:    openai.ChatMessageRoleUser,
+					Content: premise,
+				},
+			},
+		},
+	)
+	if err != nil {
+		return "", fmt.Errorf("error generating title: %w", err)
+	}
+
+	if len(resp.Choices) == 0 {
+		return "", fmt.Errorf("no response from OpenAI API")
+	}
+
+	return strings.TrimSpace(resp.Choices[0].Message.Content), nil
 }
 
-func (o *ollamaPostGenerator) GenContent(ctx context.Context, businessInfo, title string) (string, error) {
-	system := fmt.Sprintf(
+func (o *openaiPostGenerator) GenContent(ctx context.Context, businessInfo, title string) (string, error) {
+	systemPrompt := fmt.Sprintf(
 		"You are a social media content writer. Write an engaging, friendly Facebook post based on the business info and the given title. Make it attention-grabbing, include emojis if appropriate, and end with a clear call to action (e.g., 'Visit us today!', 'DM for inquiries').\n\nBusiness Info: %s",
 		businessInfo,
 	)
-	prompt := fmt.Sprintf("Write a Facebook post with this title: %s", title)
-	return o.generate(ctx, system, prompt)
+	userPrompt := fmt.Sprintf("Write a Facebook post with this title: %s", title)
+
+	resp, err := o.client.CreateChatCompletion(
+		ctx,
+		openai.ChatCompletionRequest{
+			Model: openai.GPT3Dot5Turbo,
+			Messages: []openai.ChatCompletionMessage{
+				{
+					Role:    openai.ChatMessageRoleSystem,
+					Content: systemPrompt,
+				},
+				{
+					Role:    openai.ChatMessageRoleUser,
+					Content: userPrompt,
+				},
+			},
+		},
+	)
+	if err != nil {
+		return "", fmt.Errorf("error generating content: %w", err)
+	}
+
+	if len(resp.Choices) == 0 {
+		return "", fmt.Errorf("no response from OpenAI API")
+	}
+
+	return strings.TrimSpace(resp.Choices[0].Message.Content), nil
 }
 
-func (o *ollamaPostGenerator) GenImagePrompt(ctx context.Context, businessInfo, title, content string) (string, error) {
-	system := fmt.Sprintf(
+func (o *openaiPostGenerator) GenImagePrompt(ctx context.Context, businessInfo, title, content string) (string, error) {
+	systemPrompt := fmt.Sprintf(
 		"You are a visual artist and social media expert. Create a detailed, vivid image description that captures the essence of a Facebook post. Include style (e.g., realistic, cartoon, minimalist), lighting, mood, key elements, and composition. This will be used by an AI image generator.\n\nBusiness Info: %s",
 		businessInfo,
 	)
-	prompt := fmt.Sprintf("Title: %s\n\nContent: %s", title, content)
-	return o.generate(ctx, system, prompt)
+	userPrompt := fmt.Sprintf("Title: %s\n\nContent: %s", title, content)
+
+	resp, err := o.client.CreateChatCompletion(
+		ctx,
+		openai.ChatCompletionRequest{
+			Model: openai.GPT3Dot5Turbo,
+			Messages: []openai.ChatCompletionMessage{
+				{
+					Role:    openai.ChatMessageRoleSystem,
+					Content: systemPrompt,
+				},
+				{
+					Role:    openai.ChatMessageRoleUser,
+					Content: userPrompt,
+				},
+			},
+		},
+	)
+	if err != nil {
+		return "", fmt.Errorf("error generating image prompt: %w", err)
+	}
+
+	if len(resp.Choices) == 0 {
+		return "", fmt.Errorf("no response from OpenAI API")
+	}
+
+	return strings.TrimSpace(resp.Choices[0].Message.Content), nil
+}
+
+func NewOpenaiPostGenerator(client *openai.Client) PostGenerator {
+	return &openaiPostGenerator{client: client}
 }
 
 // loadAbout lee el archivo "about.md" del directorio actual.
@@ -154,12 +245,6 @@ func savePost(businessName, title, content, imagePrompt string) error {
 	return nil
 }
 
-// delay detiene la ejecución del programa durante un número de segundos especificado.
-func delay(seconds int) {
-	log.Printf("Esperando %d segundos para evitar la limitación de tasa...", seconds)
-	time.Sleep(time.Duration(seconds) * time.Second)
-}
-
 func main() {
 	if len(os.Args) < 2 {
 		log.Fatalln("Uso: go run . \"Tu idea para el post aquí\"")
@@ -167,14 +252,11 @@ func main() {
 
 	userPremise := os.Args[1]
 
-	// Inicializar cliente Ollama
-	client, err := api.ClientFromEnvironment()
-	if err != nil {
-		log.Fatalln("Error al crear cliente Ollama:", err)
-	}
+	// Inicializar cliente OpenAI
+	openaiClient := openai.NewClient(os.Getenv("OPENAI_API_KEY"))
 
-	// Usar Ollama como generador
-	pg := NewOllamaPostGenerator(client, "") // Usa modelo por defecto
+	// Usar OpenAI como generador (cambiar a NewOllamaPostGenerator para usar Ollama)
+	pg := NewOpenaiPostGenerator(openaiClient)
 
 	// Cargar información del negocio
 	businessInfo, err := loadAbout()
@@ -184,7 +266,7 @@ func main() {
 
 	// Extraer nombre del negocio
 	log.Println("Extrayendo el nombre del negocio con IA...")
-	businessName, err := pg.ExtractBusinessNameFromAI(context.Background(), businessInfo)
+	businessName, err := pg.ExtractBusinessNameFromAbout(context.Background(), businessInfo)
 	if err != nil {
 		log.Fatalln("Error al extraer el nombre del negocio:", err)
 	}
