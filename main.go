@@ -31,7 +31,7 @@ type ollamaPostGenerator struct {
 // NewOllamaPostGenerator crea una nueva instancia que usa Ollama.
 func NewOllamaPostGenerator(client *api.Client, model string) PostGenerator {
 	if model == "" {
-		model = "qwen3:0.6b"
+		model = "qwen3:8b"
 	}
 	return &ollamaPostGenerator{client: client, model: model}
 }
